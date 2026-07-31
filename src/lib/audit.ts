@@ -123,7 +123,6 @@ export async function audit(params: {
   } catch (error) {
     // An audit failure must not take down the operation being audited, but it
     // must be loud — a silently missing consent trail is a compliance problem.
-    // eslint-disable-next-line no-console
     console.error('[audit] failed to write event', { action, entityType, entityId, error });
   }
 }

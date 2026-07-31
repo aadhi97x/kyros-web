@@ -56,7 +56,17 @@ Spec section 11 asks the developer to flag these rather than assume. Here is whe
 - Every consent event is audit-logged with redaction.
 - `env()` refuses to boot production with `CONSENT_VERIFIER=mock`.
 
-**What is NOT done:** the DigiLocker token exchange itself. `DigiLockerVerifier.complete()` throws with a pointer to the two calls that need filling in — that step requires a registered partner application, which is a commercial onboarding process rather than a coding one.
+**The DigiLocker OAuth flow is now implemented end to end:**
+- Authorisation URL with **PKCE (S256)** and an unguessable `state` token.
+- `ConsentVerificationRequest` rows persist each in-flight verification, so a `requestId` quoted at consent time can be proved to correspond to a verification this server started, for this account and this child. Previously that id was accepted unchecked — which meant a client could have claimed an identity check that never happened.
+- The token exchange runs **server-side in the callback route**, because the client secret must never reach the app bundle.
+- Only `digilockerid` survives, hashed. The `name`, `dob` and `gender` the provider returns are used to derive a match signal and then discarded — a test asserts none of them appear in the result.
+- Whether the DigiLocker account is Aadhaar-seeded is recorded as a non-identifying strength signal.
+- A completed verification is **single-use** and expires after 60 minutes, so one identity check cannot back two consent records, and a month-old check cannot authorise today's consent.
+
+**What still needs a human:** a registered partner application at `partners.digitallocker.gov.in` to obtain `DIGILOCKER_CLIENT_ID` / `DIGILOCKER_CLIENT_SECRET`, and a registered redirect URI. Until those exist the flow cannot be exercised against the live provider.
+
+**One thing to verify on first contact with the sandbox:** the token response field names (`digilockerid`, `eaadhaar`) are taken from the documented Partner API v1 contract. If they have changed, `DigiLockerVerifier.complete()` fails loudly and logs the *key names* present (never the values, which are the parent's identity data) so the mismatch is obvious in one run.
 
 **Recommendation:** get counsel to review `src/domain/consent/scopes.ts` specifically. That file *is* the consent mechanism — the notice text, the purpose list, and which purposes are treated as non-declinable. It is written to be read by a lawyer, not just a developer.
 

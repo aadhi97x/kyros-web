@@ -78,7 +78,6 @@ function translate(error: unknown): NextResponse {
 
   // Unknown: log the detail server-side, tell the client nothing useful to an
   // attacker.
-  // eslint-disable-next-line no-console
   console.error('[api] unhandled error', error);
   return fail('INTERNAL', 'Something went wrong on our end.');
 }

@@ -93,7 +93,6 @@ export async function issueOtp(params: {
 
 async function deliverOtp(destination: string, channel: OtpChannel, code: string): Promise<void> {
   if (env().OTP_DEV_MODE) {
-    // eslint-disable-next-line no-console
     console.info(`[otp:dev] ${channel} → ${destination}: ${code}`);
     return;
   }

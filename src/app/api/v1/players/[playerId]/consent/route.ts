@@ -13,7 +13,8 @@ import {
   consentScopes,
   renderNotice,
 } from '@/domain/consent/scopes';
-import { defaultVerifier, getVerifier } from '@/domain/consent/verification';
+import { defaultVerifier } from '@/domain/consent/verification';
+import { consumeCompleted } from '@/domain/consent/verification-store';
 import { auditContextFrom } from '@/lib/audit';
 
 type Params = { playerId: string };
@@ -42,19 +43,21 @@ export const GET = authedRoute<Params>(async ({ params, actor }) => {
 
 const grantSchema = z.object({
   scopes: z.array(scopeEnum).min(1),
-  /** From the verification handshake — a bare "I agree" is not enough. */
-  verification: z.object({
-    method: z.enum(['DIGILOCKER', 'MOCK', 'MANUAL_OFFLINE']),
-    requestId: z.string().min(1),
-    payload: z.record(z.unknown()).default({}),
-  }),
+  /**
+   * The id of a verification this server started and has already marked
+   * COMPLETED. A bare "I agree" is not enough, and neither is a requestId the
+   * client made up — `consumeCompleted` proves it and burns it.
+   */
+  verificationRequestId: z.string().min(1),
 });
 
 /**
  * POST /api/v1/players/:playerId/consent
  *
- * Completes verification and records the grant in one step, so a verified
- * identity can never be separated from the consent it was collected for.
+ * Records the grant against an already-completed identity verification, so a
+ * verified identity can never be separated from the consent it was collected
+ * for. The verification is single-use: one identity check cannot back two
+ * different consent records.
  */
 export const POST = authedRoute<Params>(async ({ request, params, actor }) => {
   const body = await parseBody(request, grantSchema);
@@ -62,11 +65,10 @@ export const POST = authedRoute<Params>(async ({ request, params, actor }) => {
 
   await assertOwnsPlayerProfile(actor, params.playerId);
 
-  const verifier = getVerifier(body.verification.method);
-  const result = await verifier.complete({
-    requestId: body.verification.requestId,
+  const result = await consumeCompleted({
+    requestId: body.verificationRequestId,
     accountId: actor.accountId,
-    payload: body.verification.payload,
+    playerProfileId: params.playerId,
   });
 
   const { recordId } = await grantConsent({

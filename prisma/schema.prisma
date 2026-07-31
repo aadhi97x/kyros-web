@@ -75,6 +75,13 @@ enum ConsentState {
   WITHDRAWN
 }
 
+enum ConsentVerificationStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  EXPIRED
+}
+
 /// Pluggable per spec 2.3 — DigiLocker is the path the DPDP Rules point to,
 /// but the verification step must be swappable.
 enum ConsentVerificationMethod {
@@ -293,6 +300,7 @@ model Account {
 
   playerProfiles   PlayerProfile[]
   consentsGiven    ConsentRecord[] @relation("ConsentingAccount")
+  verificationRequests ConsentVerificationRequest[]
   clubsOwned       Club[]
   coachProfiles    Coach[]
   venuesOwned      Venue[]
@@ -340,6 +348,7 @@ model PlayerProfile {
   updatedAt DateTime @updatedAt
 
   consentRecords ConsentRecord[]
+  verificationRequests ConsentVerificationRequest[]
   memberships    Membership[]
   attendances    Attendance[]
   assessments    Assessment[]
@@ -388,6 +397,47 @@ model ConsentRecord {
   @@index([playerProfileId, state])
   @@index([consentingAccountId])
   @@map("consent_records")
+}
+
+/// A parent-identity verification in flight.
+///
+/// Exists so that the `requestId` quoted when consent is granted can be proved
+/// to correspond to a verification this server actually started, for this
+/// account and this child. Without it, a client could invent a requestId and
+/// the consent record would claim a verification that never happened.
+///
+/// Also holds the PKCE `codeVerifier`, which must never leave the server.
+model ConsentVerificationRequest {
+  id        String  @id @default(cuid())
+  accountId String
+  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  playerProfileId String
+  playerProfile   PlayerProfile @relation(fields: [playerProfileId], references: [id], onDelete: Cascade)
+
+  method ConsentVerificationMethod
+  status ConsentVerificationStatus @default(PENDING)
+
+  /// PKCE code verifier. Server-side only — never returned to any client.
+  codeVerifier String?
+  /// Unguessable value echoed by the provider's redirect. Binds the callback
+  /// to this request and doubles as CSRF protection.
+  stateToken   String  @unique
+
+  expiresAt   DateTime
+  completedAt DateTime?
+  /// Opaque provider reference — never identity document contents.
+  resultReference String?
+  failureReason   String?
+
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([accountId, status])
+  @@index([playerProfileId])
+  @@index([expiresAt])
+  @@map("consent_verification_requests")
 }
 
 // ===========================================================================

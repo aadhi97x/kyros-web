@@ -7,7 +7,7 @@ const __dirname = dirname(__filename);
 
 const compat = new FlatCompat({ baseDirectory: __dirname });
 
-export default [
+const config = [
   ...compat.extends('next/core-web-vitals', 'next/typescript'),
   {
     ignores: ['.next/**', 'node_modules/**', 'coverage/**', 'src/generated/**'],
@@ -19,6 +19,12 @@ export default [
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
       ],
       '@typescript-eslint/no-explicit-any': 'error',
+      // Deliberate server-side logging (audit failures, unhandled API errors,
+      // dev-mode OTPs) goes through warn/error/info. A bare console.log is
+      // almost always a debug statement someone forgot to remove.
+      'no-console': ['error', { allow: ['warn', 'error', 'info'] }],
     },
   },
 ];
+
+export default config;

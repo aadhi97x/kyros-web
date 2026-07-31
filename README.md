@@ -62,6 +62,7 @@ src/
     consent/               ← DPDP (spec 2.3)
       scopes.ts              per-purpose definitions + notice text
       verification.ts        pluggable parent verifier (DigiLocker | mock | offline)
+      verification-store.ts  request lifecycle: issue, prove, burn
       service.ts             grant / check / withdraw
     attendance/service.ts    offline sync, absentee list, geofenced check-in
     catalog/search.ts        discovery filters (spec 2.4)
@@ -112,6 +113,8 @@ Gate order encodes the product's priorities: **consent → demo → placement �
 **`is_minor` is derived, never accepted from a client.** `src/domain/player/age.ts` is the only place that decides it.
 
 **Consent records are immutable except for withdrawal.** Changing scope creates a new record so the history stays intact. Withdrawing a required purpose cancels the memberships that depend on it — that is the "honoured downstream" requirement, not an accident.
+
+**A verification is proved, then burned.** `ConsentVerificationRequest` rows exist so the `requestId` quoted when consent is granted can be shown to correspond to a verification this server actually started, for this account and this child. `consumeCompleted()` accepts it once and only within 60 minutes of completion — one identity check cannot back two consent records, and a stale check cannot authorise today's consent. The DigiLocker token exchange happens in the server-side callback route, never in the app, because the client secret must not reach a bundle.
 
 ---
 

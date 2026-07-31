@@ -43,6 +43,19 @@ const envSchema = z.object({
   DIGILOCKER_CLIENT_ID: z.string().optional(),
   DIGILOCKER_CLIENT_SECRET: z.string().optional(),
   DIGILOCKER_REDIRECT_URI: z.string().optional(),
+  // Endpoints are configurable so the sandbox can be pointed at without a code
+  // change — the partner sandbox and production hosts differ.
+  DIGILOCKER_AUTHORIZE_URL: z
+    .string()
+    .url()
+    .default('https://api.digitallocker.gov.in/public/oauth2/1/authorize'),
+  DIGILOCKER_TOKEN_URL: z
+    .string()
+    .url()
+    .default('https://api.digitallocker.gov.in/public/oauth2/1/token'),
+  DIGILOCKER_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(60_000).default(15_000),
+  /** Deep link the callback bounces the parent back into the app with. */
+  APP_DEEP_LINK_SCHEME: z.string().default('kyros'),
 
   STORAGE_PROVIDER: z.enum(['local', 's3']).default('local'),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
