@@ -142,9 +142,12 @@ interface DigiLockerTokenResponse {
   expires_in?: number;
   scope?: string;
   consent_valid_till?: string;
+  /** Unique 36-character DigiLocker account id. The only field we keep. */
   digilockerid?: string;
   name?: string;
+  /** DDMMYYYY. Read for nothing, stored never. */
   dob?: string;
+  /** "M" | "F" | "T". Read for nothing, stored never. */
   gender?: string;
   /** "Y" when the DigiLocker account is Aadhaar-seeded — a stronger signal. */
   eaadhaar?: string;
@@ -185,6 +188,29 @@ class DigiLockerVerifier implements ParentVerifier {
 
   private tokenUrl(): string {
     return env().DIGILOCKER_TOKEN_URL;
+  }
+
+  private userInfoUrl(): string {
+    return env().DIGILOCKER_USERINFO_URL;
+  }
+
+  /**
+   * Some partner contracts return the subject in the token response; others
+   * require a follow-up call with the access token. Rather than guess which one
+   * a given deployment gets, try the token response first and fall back.
+   */
+  private async fetchSubject(accessToken: string): Promise<DigiLockerTokenResponse | null> {
+    try {
+      const response = await fetch(this.userInfoUrl(), {
+        method: 'GET',
+        headers: { authorization: `Bearer ${accessToken}`, accept: 'application/json' },
+        signal: AbortSignal.timeout(env().DIGILOCKER_TIMEOUT_MS),
+      });
+      if (!response.ok) return null;
+      return (await response.json()) as DigiLockerTokenResponse;
+    } catch {
+      return null;
+    }
   }
 
   async start(context: StartContext): Promise<VerificationStart> {
@@ -290,14 +316,21 @@ class DigiLockerVerifier implements ParentVerifier {
       );
     }
 
-    const subject = payload.digilockerid;
+    // Prefer the token response; fall back to the user-info endpoint for
+    // partner contracts that do not inline the subject.
+    let identity: DigiLockerTokenResponse = payload;
+    if (!identity.digilockerid && payload.access_token) {
+      identity = (await this.fetchSubject(payload.access_token)) ?? payload;
+    }
+
+    const subject = identity.digilockerid;
     if (!subject) {
       // Log the KEY NAMES only. The values are the parent's identity data and
       // must never reach a log file — but an integrator hitting a changed API
       // needs to see the shape to fix it.
       console.error(
-        '[digilocker] token response had no `digilockerid`. Keys present:',
-        Object.keys(payload).join(', '),
+        '[digilocker] no `digilockerid` in the token response or user info. Keys present:',
+        Object.keys(identity).join(', '),
       );
       throw new VerificationError(
         'DIGILOCKER',
@@ -306,11 +339,11 @@ class DigiLockerVerifier implements ParentVerifier {
     }
 
     // Derive the match signal, then let the PII fall out of scope. Nothing
-    // below this line touches `payload.name`, `payload.dob` or `payload.gender`.
-    const aadhaarSeeded = payload.eaadhaar === 'Y' || payload.eaadhaar === 'y';
+    // below this line touches the name, dob or gender fields.
+    const aadhaarSeeded = identity.eaadhaar === 'Y' || identity.eaadhaar === 'y';
     const nameMatches =
-      context.accountName && payload.name
-        ? namesPlausiblyMatch(context.accountName, payload.name)
+      context.accountName && identity.name
+        ? namesPlausiblyMatch(context.accountName, identity.name)
         : null;
 
     const notes = [

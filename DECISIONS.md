@@ -64,9 +64,26 @@ Spec section 11 asks the developer to flag these rather than assume. Here is whe
 - Whether the DigiLocker account is Aadhaar-seeded is recorded as a non-identifying strength signal.
 - A completed verification is **single-use** and expires after 60 minutes, so one identity check cannot back two consent records, and a month-old check cannot authorise today's consent.
 
-**What still needs a human:** a registered partner application at `partners.digitallocker.gov.in` to obtain `DIGILOCKER_CLIENT_ID` / `DIGILOCKER_CLIENT_SECRET`, and a registered redirect URI. Until those exist the flow cannot be exercised against the live provider.
+**What still needs a human:** registration as a DigiLocker **Requester** to obtain `DIGILOCKER_CLIENT_ID` / `DIGILOCKER_CLIENT_SECRET` and a registered redirect URI:
 
-**One thing to verify on first contact with the sandbox:** the token response field names (`digilockerid`, `eaadhaar`) are taken from the documented Partner API v1 contract. If they have changed, `DigiLockerVerifier.complete()` fails loudly and logs the *key names* present (never the values, which are the parent's identity data) so the mismatch is obvious in one run.
+- <https://partners.apisetu.gov.in/signup>, or
+- <https://www.digilocker.gov.in/> → "Get registered as a DigiLocker Issuer or Requester"
+
+This is an onboarding process with a Terms of Service agreement, not a self-service API key. Until those credentials exist the flow cannot be exercised against the live provider.
+
+> An earlier revision of this document pointed at `partners.digitallocker.gov.in`. **That host does not resolve** — it was wrong. The two links above were checked and do.
+
+**Endpoint versions are mismatched, deliberately.** DigiLocker's OAuth lives on the Meri Pehchaan single-sign-on host, and authorize and token are versioned independently:
+
+| | |
+|---|---|
+| authorize | `https://digilocker.meripehchaan.gov.in/public/oauth2/**1**/authorize` |
+| token | `https://digilocker.meripehchaan.gov.in/public/oauth2/**2**/token` |
+| user info | `https://digilocker.meripehchaan.gov.in/public/oauth2/**1**/user` |
+
+Assuming both are v1 gives a silent 404 on the exchange. All three are env-overridable for the sandbox, and the versions are pinned in tests with a comment explaining why they differ.
+
+**Subject retrieval handles both partner contracts.** Some return `digilockerid` inline in the token response; others require a follow-up call with the access token. The code prefers the inline value and falls back to the user-info endpoint, so it works either way. If the field names have changed entirely, `DigiLockerVerifier.complete()` fails loudly and logs the *key names* present — never the values, which are the parent's identity data — so the mismatch is obvious in one run.
 
 **Recommendation:** get counsel to review `src/domain/consent/scopes.ts` specifically. That file *is* the consent mechanism — the notice text, the purpose list, and which purposes are treated as non-declinable. It is written to be read by a lawyer, not just a developer.
 

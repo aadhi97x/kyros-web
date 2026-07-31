@@ -227,8 +227,10 @@ describe('digilocker verifier', () => {
       );
 
       const url = new URL(started.redirectUrl!);
+      // DigiLocker's OAuth lives on the Meri Pehchaan SSO host, not on
+      // api.digitallocker.gov.in.
       expect(url.origin + url.pathname).toBe(
-        'https://api.digitallocker.gov.in/public/oauth2/1/authorize',
+        'https://digilocker.meripehchaan.gov.in/public/oauth2/1/authorize',
       );
       expect(url.searchParams.get('response_type')).toBe('code');
       expect(url.searchParams.get('client_id')).toBe('test-client');
@@ -278,7 +280,9 @@ describe('digilocker verifier', () => {
       const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
       const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
 
-      expect(url).toBe('https://api.digitallocker.gov.in/public/oauth2/1/token');
+      // Authorize is v1 but token is v2. Not a typo — the two endpoints are
+      // versioned independently, and getting this wrong is a silent 404.
+      expect(url).toBe('https://digilocker.meripehchaan.gov.in/public/oauth2/2/token');
       expect(init.method).toBe('POST');
       expect((init.headers as Record<string, string>)['content-type']).toBe(
         'application/x-www-form-urlencoded',
@@ -372,7 +376,45 @@ describe('digilocker verifier', () => {
       ).rejects.toMatchObject({ retryable: false });
     });
 
-    it('fails loudly when the response has no subject identifier', async () => {
+    it('falls back to the user-info endpoint when the token response omits the subject', async () => {
+      // Partner contracts differ: some inline `digilockerid` in the token
+      // response, others require a follow-up call. Handle both rather than
+      // betting on one.
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ access_token: 'tok' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        )
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ digilockerid: 'dl-from-userinfo', eaadhaar: 'Y' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const result = await verifier.complete(
+        completeContext({ payload: { code: 'c' }, codeVerifier: 'v' }),
+      );
+
+      expect(result.verified).toBe(true);
+      expect(result.note).toMatch(/Aadhaar-seeded/);
+
+      const [userInfoUrl, userInfoInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+      expect(userInfoUrl).toBe('https://digilocker.meripehchaan.gov.in/public/oauth2/1/user');
+      expect((userInfoInit.headers as Record<string, string>).authorization).toBe('Bearer tok');
+    });
+
+    it('does not call user info when the token response already has the subject', async () => {
+      mockTokenResponse({ access_token: 'tok', digilockerid: 'dl-inline' });
+      await verifier.complete(completeContext({ payload: { code: 'c' }, codeVerifier: 'v' }));
+      expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+    });
+
+    it('fails loudly when neither the token response nor user info has a subject', async () => {
       const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
       mockTokenResponse({ access_token: 'tok', name: 'Priya Sharma' });
 

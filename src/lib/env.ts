@@ -45,14 +45,24 @@ const envSchema = z.object({
   DIGILOCKER_REDIRECT_URI: z.string().optional(),
   // Endpoints are configurable so the sandbox can be pointed at without a code
   // change — the partner sandbox and production hosts differ.
+  //
+  // Note the version mismatch: authorize is v1 but token is v2. That is not a
+  // typo. DigiLocker's OAuth now lives on the Meri Pehchaan (National Single
+  // Sign-On) host and the two endpoints are versioned independently.
   DIGILOCKER_AUTHORIZE_URL: z
     .string()
     .url()
-    .default('https://api.digitallocker.gov.in/public/oauth2/1/authorize'),
+    .default('https://digilocker.meripehchaan.gov.in/public/oauth2/1/authorize'),
   DIGILOCKER_TOKEN_URL: z
     .string()
     .url()
-    .default('https://api.digitallocker.gov.in/public/oauth2/1/token'),
+    .default('https://digilocker.meripehchaan.gov.in/public/oauth2/2/token'),
+  // Fallback for partner contracts where the token response does not itself
+  // carry `digilockerid`.
+  DIGILOCKER_USERINFO_URL: z
+    .string()
+    .url()
+    .default('https://digilocker.meripehchaan.gov.in/public/oauth2/1/user'),
   DIGILOCKER_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(60_000).default(15_000),
   /** Deep link the callback bounces the parent back into the app with. */
   APP_DEEP_LINK_SCHEME: z.string().default('kyros'),
