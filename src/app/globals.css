@@ -1,0 +1,41 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-pitch-50: #f0fdf4;
+  --color-pitch-100: #dcfce7;
+  --color-pitch-500: #16a34a;
+  --color-pitch-600: #15803d;
+  --color-pitch-700: #166534;
+  --color-ink-500: #64748b;
+  --color-ink-700: #334155;
+  --color-ink-900: #0f172a;
+}
+
+:root {
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --surface: #ffffff;
+  --border: #e2e8f0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #020617;
+    --foreground: #e2e8f0;
+    --surface: #0f172a;
+    --border: #1e293b;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+}

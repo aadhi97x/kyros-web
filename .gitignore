@@ -1,0 +1,137 @@
+# ---------------------------------------------------------------------------
+# Kyros web/API — git ignore
+# Rule of thumb: if it holds a secret, a customer's data, or a build output,
+# it does not belong in git.
+# ---------------------------------------------------------------------------
+
+# --- Secrets & environment -------------------------------------------------
+.env
+.env.*
+!.env.example
+*.env
+.envrc
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Credentials, keys, certificates
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.crt
+*.cer
+*.der
+id_rsa*
+id_ed25519*
+secrets/
+.secrets/
+*secret*.json
+*credentials*.json
+service-account*.json
+gcp-*.json
+aws-*.json
+firebase-adminsdk*.json
+razorpay-*.json
+.npmrc
+.yarnrc
+.pgpass
+
+# Terraform / infra state (contains plaintext secrets)
+*.tfstate
+*.tfstate.*
+.terraform/
+*.tfvars
+!*.tfvars.example
+
+# --- Customer / personal data (DPDP) ---------------------------------------
+# Never commit exports, dumps or fixtures containing real member data.
+*.dump
+*.sql.gz
+dumps/
+backups/
+exports/
+uploads/
+/data/
+/storage/
+**/pii/
+**/*.pii.*
+
+# --- Node -------------------------------------------------------------------
+node_modules/
+.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/releases
+!.yarn/plugins
+!.yarn/versions
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+
+# --- Next.js ----------------------------------------------------------------
+.next/
+out/
+build/
+dist/
+.vercel/
+next-env.d.ts
+.turbo/
+
+# --- Prisma -----------------------------------------------------------------
+# Generated client only; migrations ARE committed.
+prisma/generated/
+prisma/*.db
+prisma/*.db-journal
+prisma/dev.db*
+
+# --- Testing / coverage -----------------------------------------------------
+coverage/
+.nyc_output/
+test-results/
+playwright-report/
+blob-report/
+.vitest/
+*.lcov
+
+# --- Caches & tooling -------------------------------------------------------
+.cache/
+.eslintcache
+.stylelintcache
+*.tsbuildinfo
+.tscache/
+.swc/
+
+# --- Editors & OS -----------------------------------------------------------
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.example.json
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# --- Logs & runtime ---------------------------------------------------------
+logs/
+*.log
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# --- Local scratch ----------------------------------------------------------
+tmp/
+temp/
+scratch/
+.local/
+TODO.local.md

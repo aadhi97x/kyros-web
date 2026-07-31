@@ -1,0 +1,1295 @@
+// ---------------------------------------------------------------------------
+// Kyros — data model
+//
+// Mirrors Section 6 of the platform specification. Conventions:
+//   * All money is stored in **paise** (integer). Never floats for currency.
+//   * Timestamps are UTC `DateTime`; wall-clock schedule times are stored as
+//     minutes-from-midnight integers so they survive timezone changes.
+//   * Soft state (archived / cancelled) is modelled with explicit status enums,
+//     never a nullable `deletedAt`, so history is queryable.
+// ---------------------------------------------------------------------------
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_DATABASE_URL")
+}
+
+// ===========================================================================
+// Enums
+// ===========================================================================
+
+enum AccountRole {
+  MEMBER
+  CLUB_OWNER
+  COACH
+  VENUE_OWNER
+  PLATFORM_ADMIN
+}
+
+enum AccountType {
+  GUARDIAN // parent enrolling one or more children
+  ADULT_PLAYER // their own single profile
+  UNSET // set immediately after OTP verification
+}
+
+enum AccountStatus {
+  PENDING_VERIFICATION
+  ACTIVE
+  SUSPENDED
+  ERASURE_REQUESTED
+  ERASED
+}
+
+/// How the account came into existence. Spec 2.1 requires all three doors.
+enum AccountOrigin {
+  GUARDIAN_SIGNUP
+  ADULT_SIGNUP
+  COACH_CREATED // walk-in family registered by a coach; claimed later
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+  UNDISCLOSED
+}
+
+enum PlayerStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum PreferredFoot {
+  LEFT
+  RIGHT
+  BOTH
+}
+
+enum ConsentState {
+  ACTIVE
+  WITHDRAWN
+}
+
+/// Pluggable per spec 2.3 — DigiLocker is the path the DPDP Rules point to,
+/// but the verification step must be swappable.
+enum ConsentVerificationMethod {
+  DIGILOCKER
+  MOCK // local development only
+  MANUAL_OFFLINE // club verified ID in person; requires an audit note
+}
+
+enum ClubStatus {
+  DRAFT
+  PENDING_REVIEW
+  PUBLISHED
+  SUSPENDED
+}
+
+enum TrainingMode {
+  ACADEMY
+  CREDITS
+}
+
+/// A club may run both modes; the mode then lives on each batch/package.
+enum ClubTrainingMode {
+  ACADEMY
+  CREDITS
+  BOTH
+}
+
+enum BatchType {
+  GENERAL
+  SQUAD
+  ELITE
+}
+
+enum SkillLevel {
+  BEGINNER
+  INTERMEDIATE
+  ADVANCED
+  ELITE
+}
+
+enum BillingType {
+  MONTHLY
+  TERM
+  CREDIT_PACK
+  PER_SESSION
+}
+
+enum MembershipStatus {
+  PENDING_APPROVAL // club requires owner/coach approval
+  PENDING_PAYMENT
+  ACTIVE
+  WAITLISTED
+  PAUSED
+  CANCELLED
+  EXPIRED
+}
+
+enum SessionStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+  EXCUSED
+}
+
+/// Spec 3.2 / 4.3. Only COACH_TAP is wired in this build; the others exist so
+/// the model does not have to change when gate cameras arrive.
+enum AttendanceMethod {
+  COACH_TAP
+  FACE_GATE
+  COACH_TAP_WITH_FACE_GATE // face gate primary, manual tap as backup
+}
+
+enum AttendanceSource {
+  COACH_TAP
+  FACE_GATE
+  OFFLINE_SYNC
+}
+
+enum DemoStatus {
+  REQUESTED
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum PaymentType {
+  MEMBERSHIP_FEE
+  REGISTRATION_FEE
+  ADDON
+  INSTALMENT
+  CREDIT_PACK
+  TURF_BOOKING
+  REFUND
+  WALLET_TOPUP
+}
+
+enum PaymentStatus {
+  CREATED
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum PaymentMethod {
+  UPI
+  CARD
+  NETBANKING
+  WALLET
+  CASH
+  BANK_TRANSFER
+}
+
+enum VenueStatus {
+  DRAFT
+  PENDING_REVIEW
+  PUBLISHED
+  SUSPENDED
+}
+
+enum SurfaceType {
+  NATURAL_GRASS
+  ARTIFICIAL_TURF
+  HYBRID
+  INDOOR_COURT
+  CONCRETE
+}
+
+/// HELD is the soft-lock that prevents the double-booking failure mode.
+enum BookingStatus {
+  HELD
+  CONFIRMED
+  CANCELLED
+  EXPIRED
+  COMPLETED
+}
+
+enum AssessmentPeriod {
+  SESSION
+  MONTHLY
+  QUARTERLY
+  ANNUAL
+}
+
+enum ThreadType {
+  BATCH_GROUP
+  DIRECT
+}
+
+enum NotificationType {
+  SESSION_REMINDER
+  PAYMENT_REMINDER
+  INSTALMENT_DUE
+  DEMO_CONFIRMED
+  DEMO_UPDATED
+  ABSENTEE_FOLLOWUP
+  BOOKING_CONFIRMED
+  REPORT_PUBLISHED
+  WAITLIST_PROMOTED
+  ENROLLMENT_APPROVED
+  CONSENT_REQUIRED
+  GENERIC
+}
+
+enum PauseReason {
+  INJURY
+  ILLNESS
+  TRAVEL
+  OTHER
+}
+
+// ===========================================================================
+// Accounts, profiles, consent
+// ===========================================================================
+
+model Account {
+  id           String        @id @default(cuid())
+  name         String
+  email        String?       @unique
+  phone        String        @unique
+  passwordHash String?
+  role         AccountRole   @default(MEMBER)
+  type         AccountType   @default(UNSET)
+  status       AccountStatus @default(PENDING_VERIFICATION)
+  origin       AccountOrigin @default(GUARDIAN_SIGNUP)
+
+  phoneVerifiedAt DateTime?
+  emailVerifiedAt DateTime?
+
+  /// Denormalised convenience flag (spec 6 "consent-on-file"). The authority is
+  /// always the ConsentRecord rows; this is only for list rendering.
+  hasConsentOnFile Boolean @default(false)
+
+  /// Shared wallet at ACCOUNT level (spec 2.8) — carryover credit from a paused
+  /// child sits here and applies to any profile under the account.
+  walletBalancePaise Int @default(0)
+
+  /// Set when a COACH_CREATED account has not yet been claimed by the family.
+  claimToken     String?   @unique
+  claimTokenSentAt DateTime?
+  claimedAt      DateTime?
+
+  erasureRequestedAt DateTime?
+  lastLoginAt        DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  playerProfiles   PlayerProfile[]
+  consentsGiven    ConsentRecord[] @relation("ConsentingAccount")
+  clubsOwned       Club[]
+  coachProfiles    Coach[]
+  venuesOwned      Venue[]
+  payments         Payment[]
+  bookings         Booking[]
+  walletEntries    WalletEntry[]
+  notifications    Notification[]
+  devices          Device[]
+  refreshTokens    RefreshToken[]
+  otpChallenges    OtpChallenge[]
+  auditEvents      AuditEvent[]    @relation("AuditActor")
+  chatMemberships  ChatParticipant[]
+  messagesSent     ChatMessage[]
+  demoBookings     DemoBooking[]
+
+  @@index([status])
+  @@index([role])
+  @@map("accounts")
+}
+
+model PlayerProfile {
+  id        String @id @default(cuid())
+  accountId String
+  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  fullName         String
+  dateOfBirth      DateTime
+  gender           Gender         @default(UNDISCLOSED)
+  photoUrl         String?
+  positions        String[]       @default([])
+  preferredFoot    PreferredFoot?
+  medicalNotes     String?
+  emergencyName    String?
+  emergencyPhone   String?
+  emergencyRelation String?
+
+  /// DERIVED from dateOfBirth — never accepted from client input (spec 2.2).
+  /// Recomputed on every write and by a scheduled job at birthdays.
+  isMinor Boolean
+
+  joinDate DateTime     @default(now())
+  status   PlayerStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  consentRecords ConsentRecord[]
+  memberships    Membership[]
+  attendances    Attendance[]
+  assessments    Assessment[]
+  demoBookings   DemoBooking[]
+  waitlistEntries WaitlistEntry[]
+  notifications  Notification[]
+
+  @@index([accountId, status])
+  @@index([isMinor])
+  @@map("player_profiles")
+}
+
+/// Structured consent record per child (spec 2.3) — never a boolean.
+/// Immutable except for withdrawal; a change of scope creates a NEW record.
+model ConsentRecord {
+  id              String @id @default(cuid())
+  playerProfileId String
+  playerProfile   PlayerProfile @relation(fields: [playerProfileId], references: [id], onDelete: Cascade)
+
+  consentingAccountId String
+  consentingAccount   Account @relation("ConsentingAccount", fields: [consentingAccountId], references: [id])
+
+  /// The specific, unbundled purposes agreed to. One row per purpose set,
+  /// e.g. ["enrollment_admin","attendance_records","coach_assessments"].
+  scopes String[]
+
+  /// Exact plain-language text shown at the moment of consent, plus its
+  /// version — required to prove what was actually agreed to.
+  noticeVersion String
+  noticeText    String
+
+  verificationMethod    ConsentVerificationMethod
+  verificationReference String? // opaque provider reference, never raw ID data
+  verifiedAt            DateTime?
+
+  state       ConsentState @default(ACTIVE)
+  grantedAt   DateTime     @default(now())
+  withdrawnAt DateTime?
+  withdrawalReason String?
+
+  ipAddress String?
+  userAgent String?
+
+  createdAt DateTime @default(now())
+
+  @@index([playerProfileId, state])
+  @@index([consentingAccountId])
+  @@map("consent_records")
+}
+
+// ===========================================================================
+// Auth plumbing
+// ===========================================================================
+
+model OtpChallenge {
+  id        String  @id @default(cuid())
+  accountId String?
+  account   Account? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  /// Phone or email the code was sent to.
+  destination String
+  channel     String // "sms" | "email"
+  /// Only the hash is stored — a leaked table must not yield live codes.
+  codeHash    String
+  purpose     String // "signup" | "login" | "phone_change" | "claim"
+
+  attempts    Int      @default(0)
+  maxAttempts Int      @default(5)
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  createdAt   DateTime @default(now())
+
+  @@index([destination, purpose])
+  @@index([expiresAt])
+  @@map("otp_challenges")
+}
+
+model RefreshToken {
+  id        String  @id @default(cuid())
+  accountId String
+  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  tokenHash String   @unique
+  deviceId  String?
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([accountId])
+  @@map("refresh_tokens")
+}
+
+model Device {
+  id        String  @id @default(cuid())
+  accountId String
+  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  pushToken String  @unique
+  platform  String // "ios" | "android" | "web"
+  appVersion String?
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  @@index([accountId])
+  @@map("devices")
+}
+
+// ===========================================================================
+// Club, config, centres, coaches
+// ===========================================================================
+
+model Club {
+  id             String  @id @default(cuid())
+  ownerAccountId String
+  owner          Account @relation(fields: [ownerAccountId], references: [id])
+
+  name        String
+  slug        String  @unique
+  logoUrl     String?
+  description String?
+  /// Business registration details. Treated as club PII — not exposed publicly.
+  registrationNumber String?
+  gstin              String?
+  contactEmail       String?
+  contactPhone       String?
+
+  status       ClubStatus       @default(DRAFT)
+  trainingMode ClubTrainingMode @default(ACADEMY)
+
+  /// THE config object (spec 3.2). Validated by src/domain/config/schema.ts on
+  /// every write; the member app reads it at runtime and branches on it.
+  config Json
+
+  /// Which wizard step the owner has reached (spec 3.1), so setup can resume.
+  setupStep     Int       @default(1)
+  publishedAt   DateTime?
+  ratingAverage Float     @default(0)
+  ratingCount   Int       @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  centres       Centre[]
+  coaches       Coach[]
+  batches       Batch[]
+  packages      Package[]
+  demoBookings  DemoBooking[]
+  demoSlots     DemoSlot[]
+  chatThreads   ChatThread[]
+
+  @@index([status])
+  @@map("clubs")
+}
+
+model Centre {
+  id     String @id @default(cuid())
+  clubId String
+  club   Club   @relation(fields: [clubId], references: [id], onDelete: Cascade)
+
+  name    String
+  address String
+  city    String
+  state   String?
+  pincode String?
+
+  /// Map coordinates — required for coach geofenced check-in (spec 4.2).
+  latitude       Float
+  longitude      Float
+  geofenceRadiusM Int   @default(150)
+
+  capacity     Int?
+  amenities    String[] @default([])
+  openingMinute Int     @default(300) // 05:00
+  closingMinute Int     @default(1320) // 22:00
+
+  /// Optional link to a marketplace Venue — the same physical ground. When set,
+  /// club sessions and outside bookings share one availability calendar.
+  venueId String? @unique
+  venue   Venue?  @relation(fields: [venueId], references: [id])
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  batches   Batch[]
+  sessions  Session[]
+  coaches   CoachCentre[]
+  demoSlots DemoSlot[]
+
+  @@index([clubId])
+  @@index([city])
+  @@map("centres")
+}
+
+model Coach {
+  id        String  @id @default(cuid())
+  clubId    String
+  club      Club    @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  /// Null until the coach claims their login.
+  accountId String?
+  account   Account? @relation(fields: [accountId], references: [id])
+
+  name          String
+  photoUrl      String?
+  qualification String?
+  bio           String?
+  phone         String?
+  email         String?
+  isActive      Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  centres      CoachCentre[]
+  availability CoachAvailability[]
+  batches      Batch[]
+  sessions     Session[]
+  attendances  Attendance[]
+  assessments  Assessment[]
+  checkIns     CoachCheckIn[]
+  demoBookings DemoBooking[]
+
+  @@index([clubId, isActive])
+  @@index([accountId])
+  @@map("coaches")
+}
+
+model CoachCentre {
+  coachId  String
+  coach    Coach  @relation(fields: [coachId], references: [id], onDelete: Cascade)
+  centreId String
+  centre   Centre @relation(fields: [centreId], references: [id], onDelete: Cascade)
+
+  @@id([coachId, centreId])
+  @@map("coach_centres")
+}
+
+model CoachAvailability {
+  id      String @id @default(cuid())
+  coachId String
+  coach   Coach  @relation(fields: [coachId], references: [id], onDelete: Cascade)
+
+  dayOfWeek   Int // 0 = Sunday
+  startMinute Int
+  endMinute   Int
+
+  @@index([coachId, dayOfWeek])
+  @@map("coach_availability")
+}
+
+/// Geofenced "I'm here" (spec 4.2). Feeds the punctuality metric.
+model CoachCheckIn {
+  id      String @id @default(cuid())
+  coachId String
+  coach   Coach  @relation(fields: [coachId], references: [id], onDelete: Cascade)
+
+  sessionId String?
+  session   Session? @relation(fields: [sessionId], references: [id])
+
+  checkedInAt DateTime @default(now())
+  latitude    Float
+  longitude   Float
+  accuracyM   Float?
+  distanceFromCentreM Float
+  withinGeofence      Boolean
+  /// True when it landed outside the fence but the owner allows review.
+  flaggedForReview    Boolean @default(false)
+  minutesLate         Int?
+
+  createdAt DateTime @default(now())
+
+  @@index([coachId, checkedInAt])
+  @@map("coach_check_ins")
+}
+
+// ===========================================================================
+// Batches, packages
+// ===========================================================================
+
+model Batch {
+  id       String  @id @default(cuid())
+  clubId   String
+  club     Club    @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  centreId String
+  centre   Centre  @relation(fields: [centreId], references: [id])
+  coachId  String?
+  coach    Coach?  @relation(fields: [coachId], references: [id])
+
+  name       String
+  /// Mode lives on the BATCH, not the club (core design principle 4).
+  mode       TrainingMode
+  type       BatchType    @default(GENERAL)
+  minAge     Int
+  maxAge     Int
+  skillLevel SkillLevel   @default(BEGINNER)
+  capacity   Int
+  /// Maintained transactionally alongside Membership writes so capacity checks
+  /// never need a COUNT under load.
+  activeCount Int         @default(0)
+
+  entryRules String?
+  syllabus   Json?
+  isActive   Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  schedule     BatchSchedule[]
+  packages     Package[]
+  memberships  Membership[]
+  sessions     Session[]
+  demoBookings DemoBooking[]
+  waitlist     WaitlistEntry[]
+  chatThread   ChatThread?
+
+  @@index([clubId, isActive])
+  @@index([centreId])
+  @@index([mode, skillLevel])
+  @@index([minAge, maxAge])
+  @@map("batches")
+}
+
+model BatchSchedule {
+  id      String @id @default(cuid())
+  batchId String
+  batch   Batch  @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  dayOfWeek   Int // 0 = Sunday
+  startMinute Int
+  endMinute   Int
+
+  @@index([batchId])
+  @@index([dayOfWeek, startMinute])
+  @@map("batch_schedules")
+}
+
+model Package {
+  id      String  @id @default(cuid())
+  clubId  String
+  club    Club    @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  batchId String?
+  batch   Batch?  @relation(fields: [batchId], references: [id])
+
+  tierName    String
+  description String?
+  mode        TrainingMode
+  billingType BillingType
+
+  /// All money in paise.
+  pricePaise            Int
+  registrationFeePaise  Int @default(0)
+  /// Credits mode: how many sessions the pack buys.
+  creditSessions        Int?
+  /// Term billing: length in months.
+  termMonths            Int?
+
+  inclusions String[] @default([])
+
+  partPaymentAllowed  Boolean @default(false)
+  partPaymentSplits   Int?    @default(2)
+  partPaymentGapDays  Int?    @default(30)
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  addOns      PackageAddOn[]
+  memberships Membership[]
+
+  @@index([clubId, isActive])
+  @@index([batchId])
+  @@map("packages")
+}
+
+/// Kit / jersey / registration shown as separate line items (spec 2.5, 2.8).
+model PackageAddOn {
+  id        String  @id @default(cuid())
+  packageId String
+  package   Package @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  name       String
+  pricePaise Int
+  mandatory  Boolean @default(false)
+  oneTime    Boolean @default(true)
+
+  @@index([packageId])
+  @@map("package_add_ons")
+}
+
+// ===========================================================================
+// Demos
+// ===========================================================================
+
+model DemoSlot {
+  id       String @id @default(cuid())
+  clubId   String
+  club     Club   @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  centreId String
+  centre   Centre @relation(fields: [centreId], references: [id], onDelete: Cascade)
+
+  startsAt DateTime
+  endsAt   DateTime
+  capacity Int      @default(1)
+  bookedCount Int   @default(0)
+  isActive Boolean  @default(true)
+
+  demoBookings DemoBooking[]
+
+  @@index([clubId, startsAt])
+  @@map("demo_slots")
+}
+
+model DemoBooking {
+  id              String @id @default(cuid())
+  clubId          String
+  club            Club   @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  playerProfileId String
+  playerProfile   PlayerProfile @relation(fields: [playerProfileId], references: [id], onDelete: Cascade)
+  accountId       String
+  account         Account @relation(fields: [accountId], references: [id])
+
+  demoSlotId String?
+  demoSlot   DemoSlot? @relation(fields: [demoSlotId], references: [id])
+
+  intendedBatchId String?
+  intendedBatch   Batch?  @relation(fields: [intendedBatchId], references: [id])
+
+  scheduledAt DateTime
+  status      DemoStatus @default(REQUESTED)
+
+  coachId String?
+  coach   Coach?  @relation(fields: [coachId], references: [id])
+
+  // Post-demo, filled in by the coach; surfaces on the member's post-demo
+  // screen (spec 2.6 / 3.8).
+  coachFeedback        String?
+  skillRatings         Json?
+  recommendedBatchId   String?
+  recommendedPackageId String?
+  feedbackRecordedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([clubId, status])
+  @@index([playerProfileId])
+  @@index([scheduledAt])
+  @@map("demo_bookings")
+}
+
+// ===========================================================================
+// Memberships & lifecycle
+// ===========================================================================
+
+model Membership {
+  id              String @id @default(cuid())
+  playerProfileId String
+  playerProfile   PlayerProfile @relation(fields: [playerProfileId], references: [id], onDelete: Cascade)
+  packageId       String
+  package         Package @relation(fields: [packageId], references: [id])
+  batchId         String
+  batch           Batch   @relation(fields: [batchId], references: [id])
+
+  status    MembershipStatus @default(PENDING_PAYMENT)
+  startDate DateTime?
+  endDate   DateTime?
+
+  /// Snapshot of the priced order at purchase time. Later price changes to the
+  /// package must not retroactively alter what was sold.
+  totalPaise      Int
+  paidPaise       Int @default(0)
+  /// Credit carried into this membership (from a pause, upgrade or wallet).
+  carryoverPaise  Int @default(0)
+
+  /// Credits mode balance.
+  creditsTotal     Int?
+  creditsRemaining Int?
+
+  isPartPayment Boolean @default(false)
+
+  approvedAt        DateTime?
+  approvedByCoachId String?
+  cancelledAt       DateTime?
+  cancellationEffectiveAt DateTime?
+  cancellationReason      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  instalments   Instalment[]
+  payments      Payment[]
+  pauses        MembershipPause[]
+  addOnLines    MembershipAddOn[]
+  walletEntries WalletEntry[]
+
+  @@index([playerProfileId, status])
+  @@index([batchId, status])
+  @@index([packageId])
+  @@map("memberships")
+}
+
+model MembershipAddOn {
+  id           String     @id @default(cuid())
+  membershipId String
+  membership   Membership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+
+  name       String
+  pricePaise Int
+
+  @@index([membershipId])
+  @@map("membership_add_ons")
+}
+
+model Instalment {
+  id           String     @id @default(cuid())
+  membershipId String
+  membership   Membership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+
+  sequence    Int
+  amountPaise Int
+  dueDate     DateTime
+  paidAt      DateTime?
+  paymentId   String?
+
+  reminderSentAt DateTime?
+  overdue        Boolean  @default(false)
+
+  @@unique([membershipId, sequence])
+  @@index([dueDate, paidAt])
+  @@map("instalments")
+}
+
+model MembershipPause {
+  id           String     @id @default(cuid())
+  membershipId String
+  membership   Membership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+
+  reason      PauseReason
+  reasonNote  String?
+  startDate   DateTime
+  endDate     DateTime
+  /// What the club's policy produced for this pause, recorded at the time so
+  /// later policy edits do not rewrite history.
+  carryoverAppliedPaise Int @default(0)
+  policySnapshot        Json
+
+  resumedAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([membershipId])
+  @@map("membership_pauses")
+}
+
+model WaitlistEntry {
+  id              String @id @default(cuid())
+  batchId         String
+  batch           Batch  @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  playerProfileId String
+  playerProfile   PlayerProfile @relation(fields: [playerProfileId], references: [id], onDelete: Cascade)
+
+  packageId String?
+  /// Manual ordering — owners can reorder the queue (spec 3.7).
+  position  Int
+  promotedAt DateTime?
+  removedAt  DateTime?
+  createdAt  DateTime @default(now())
+
+  @@unique([batchId, playerProfileId])
+  @@index([batchId, position])
+  @@map("waitlist_entries")
+}
+
+// ===========================================================================
+// Sessions, attendance, assessments
+// ===========================================================================
+
+model Session {
+  id       String @id @default(cuid())
+  batchId  String
+  batch    Batch  @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  centreId String
+  centre   Centre @relation(fields: [centreId], references: [id])
+  coachId  String?
+  coach    Coach? @relation(fields: [coachId], references: [id])
+
+  startsAt DateTime
+  endsAt   DateTime
+  status   SessionStatus @default(SCHEDULED)
+
+  syllabusModule String?
+  notes          String?
+
+  /// Set when the club's Centre is linked to a Venue, so the shared
+  /// availability calendar can exclude this slot from outside bookings.
+  bookingId String? @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  attendances Attendance[]
+  assessments Assessment[]
+  checkIns    CoachCheckIn[]
+
+  @@index([batchId, startsAt])
+  @@index([centreId, startsAt])
+  @@index([startsAt, status])
+  @@map("sessions")
+}
+
+model Attendance {
+  id              String @id @default(cuid())
+  sessionId       String
+  session         Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  playerProfileId String
+  playerProfile   PlayerProfile @relation(fields: [playerProfileId], references: [id], onDelete: Cascade)
+
+  status      AttendanceStatus
+  source      AttendanceSource @default(COACH_TAP)
+  checkInTime DateTime?
+
+  markedByCoachId String?
+  markedByCoach   Coach?  @relation(fields: [markedByCoachId], references: [id])
+  markedAt        DateTime @default(now())
+
+  /// Client-generated id for the offline queue. Unique so a replayed sync is a
+  /// no-op rather than a duplicate row (spec 4.3 offline requirement).
+  clientMutationId String?  @unique
+  /// When the coach actually tapped, which may be well before it synced.
+  recordedAtDevice DateTime?
+  syncedAt         DateTime?
+
+  @@unique([sessionId, playerProfileId])
+  @@index([playerProfileId, markedAt])
+  @@map("attendances")
+}
+
+model Assessment {
+  id              String @id @default(cuid())
+  playerProfileId String
+  playerProfile   PlayerProfile @relation(fields: [playerProfileId], references: [id], onDelete: Cascade)
+  coachId         String
+  coach           Coach  @relation(fields: [coachId], references: [id])
+  sessionId       String?
+  session         Session? @relation(fields: [sessionId], references: [id])
+
+  period AssessmentPeriod @default(SESSION)
+  /// { "dribbling": 4, "passing": 3, ... } — 1..5 per skill.
+  skillRatings Json
+  notes        String?
+
+  periodStart DateTime?
+  periodEnd   DateTime?
+  /// Reports are drafted by the coach and only visible to the parent once
+  /// published (spec 2.10).
+  publishedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([playerProfileId, createdAt])
+  @@index([coachId])
+  @@map("assessments")
+}
+
+// ===========================================================================
+// Money
+// ===========================================================================
+
+model Payment {
+  id        String  @id @default(cuid())
+  accountId String
+  account   Account @relation(fields: [accountId], references: [id])
+
+  membershipId String?
+  membership   Membership? @relation(fields: [membershipId], references: [id])
+  bookingId    String?
+  booking      Booking?    @relation(fields: [bookingId], references: [id])
+  instalmentId String?
+
+  type   PaymentType
+  status PaymentStatus @default(CREATED)
+  method PaymentMethod?
+
+  amountPaise         Int
+  /// Commission applies to turf bookings only (spec 5.4 / 7).
+  commissionPaise     Int @default(0)
+  refundedPaise       Int @default(0)
+  currency            String @default("INR")
+
+  /// Idempotency (spec 2.8 / 8): a retry with the same key returns the original
+  /// payment instead of charging again.
+  idempotencyKey String @unique
+
+  gateway           String? // "razorpay"
+  gatewayOrderId    String?
+  gatewayPaymentId  String? @unique
+  gatewaySignature  String?
+  failureReason     String?
+
+  paidAt    DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  walletEntries WalletEntry[]
+
+  @@index([accountId, createdAt])
+  @@index([status])
+  @@index([membershipId])
+  @@map("payments")
+}
+
+/// Append-only ledger for the shared account wallet. Balance on Account is a
+/// cached sum; these rows are the truth.
+model WalletEntry {
+  id        String  @id @default(cuid())
+  accountId String
+  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  /// Positive = credit into the wallet, negative = applied out of it.
+  amountPaise Int
+  reason      String // "pause_carryover" | "downgrade_credit" | "refund" | "applied_to_membership" | "topup"
+  description String?
+
+  membershipId String?
+  membership   Membership? @relation(fields: [membershipId], references: [id])
+  paymentId    String?
+  payment      Payment?    @relation(fields: [paymentId], references: [id])
+
+  balanceAfterPaise Int
+  createdAt         DateTime @default(now())
+
+  @@index([accountId, createdAt])
+  @@map("wallet_entries")
+}
+
+// ===========================================================================
+// Venue marketplace (Build 2 — modelled now so nothing blocks it)
+// ===========================================================================
+
+model Venue {
+  id             String  @id @default(cuid())
+  ownerAccountId String
+  owner          Account @relation(fields: [ownerAccountId], references: [id])
+
+  name        String
+  description String?
+  address     String
+  city        String
+  state       String?
+  pincode     String?
+  latitude    Float
+  longitude   Float
+
+  surface      SurfaceType @default(ARTIFICIAL_TURF)
+  sizeLabel    String? // "5-a-side", "7-a-side", "full pitch"
+  photos       String[]    @default([])
+  amenities    String[]    @default([])
+  hourlyRatePaise Int
+
+  /// Auto-confirm incoming bookings vs manual accept (spec 5.3).
+  autoConfirmBookings Boolean @default(true)
+  slotMinutes         Int     @default(60)
+  holdWindowSeconds   Int     @default(600)
+
+  status    VenueStatus @default(DRAFT)
+  ratingAverage Float   @default(0)
+  ratingCount   Int     @default(0)
+
+  payoutAccountRef String? // tokenised reference from the gateway, never raw bank details
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  bookings     Booking[]
+  availability VenueAvailability[]
+  blocks       VenueBlock[]
+  linkedCentre Centre?
+
+  @@index([status, city])
+  @@map("venues")
+}
+
+model VenueAvailability {
+  id      String @id @default(cuid())
+  venueId String
+  venue   Venue  @relation(fields: [venueId], references: [id], onDelete: Cascade)
+
+  dayOfWeek   Int
+  startMinute Int
+  endMinute   Int
+
+  @@index([venueId, dayOfWeek])
+  @@map("venue_availability")
+}
+
+/// Owner-blocked time: leases, maintenance, personal use.
+model VenueBlock {
+  id      String @id @default(cuid())
+  venueId String
+  venue   Venue  @relation(fields: [venueId], references: [id], onDelete: Cascade)
+
+  startsAt DateTime
+  endsAt   DateTime
+  reason   String?
+
+  @@index([venueId, startsAt])
+  @@map("venue_blocks")
+}
+
+model Booking {
+  id      String @id @default(cuid())
+  venueId String
+  venue   Venue  @relation(fields: [venueId], references: [id], onDelete: Cascade)
+
+  bookedByAccountId String
+  bookedByAccount   Account @relation(fields: [bookedByAccountId], references: [id])
+  /// Set when a club books the ground for its own session.
+  bookedForClubId   String?
+
+  startsAt DateTime
+  endsAt   DateTime
+  status   BookingStatus @default(HELD)
+
+  /// Soft-lock expiry. A HELD row past this instant is dead and must not block
+  /// a new booking — see src/domain/booking/locks.ts.
+  holdExpiresAt DateTime?
+
+  amountPaise     Int
+  commissionPaise Int @default(0)
+  payoutPaise     Int @default(0)
+
+  confirmedAt DateTime?
+  cancelledAt DateTime?
+  cancellationReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  payments Payment[]
+
+  @@index([venueId, startsAt, status])
+  @@index([bookedByAccountId])
+  @@index([status, holdExpiresAt])
+  @@map("bookings")
+}
+
+// ===========================================================================
+// Chat & notifications
+// ===========================================================================
+
+model ChatThread {
+  id     String @id @default(cuid())
+  clubId String
+  club   Club   @relation(fields: [clubId], references: [id], onDelete: Cascade)
+
+  type    ThreadType @default(BATCH_GROUP)
+  batchId String?    @unique
+  batch   Batch?     @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  title     String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  participants ChatParticipant[]
+  messages     ChatMessage[]
+
+  @@index([clubId])
+  @@map("chat_threads")
+}
+
+model ChatParticipant {
+  id       String @id @default(cuid())
+  threadId String
+  thread   ChatThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  accountId String
+  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  role       String // "member" | "coach" | "owner"
+  lastReadAt DateTime?
+  mutedAt    DateTime?
+  joinedAt   DateTime @default(now())
+
+  @@unique([threadId, accountId])
+  @@index([accountId])
+  @@map("chat_participants")
+}
+
+model ChatMessage {
+  id       String @id @default(cuid())
+  threadId String
+  thread   ChatThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  senderAccountId String
+  senderAccount   Account @relation(fields: [senderAccountId], references: [id])
+
+  body        String
+  attachmentUrl String?
+  clientMutationId String? @unique
+  createdAt   DateTime @default(now())
+  editedAt    DateTime?
+  deletedAt   DateTime?
+
+  @@index([threadId, createdAt])
+  @@map("chat_messages")
+}
+
+model Notification {
+  id        String  @id @default(cuid())
+  /// Always routed to the ACCOUNT HOLDER (spec 2.11)...
+  accountId String
+  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  /// ...and tagged with which player it concerns.
+  playerProfileId String?
+  playerProfile   PlayerProfile? @relation(fields: [playerProfileId], references: [id], onDelete: SetNull)
+
+  type  NotificationType
+  title String
+  body  String
+  data  Json?
+
+  readAt DateTime?
+  sentAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([accountId, createdAt])
+  @@index([accountId, readAt])
+  @@map("notifications")
+}
+
+// ===========================================================================
+// Audit
+// ===========================================================================
+
+/// Append-only. Consent events in particular are legally load-bearing (spec 8).
+model AuditEvent {
+  id             String  @id @default(cuid())
+  actorAccountId String?
+  actor          Account? @relation("AuditActor", fields: [actorAccountId], references: [id])
+
+  action     String // "consent.granted", "consent.withdrawn", "membership.paused", ...
+  entityType String
+  entityId   String
+  /// Redacted diff — never store raw identity documents or payment credentials.
+  metadata   Json?
+
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([action, createdAt])
+  @@index([actorAccountId, createdAt])
+  @@map("audit_events")
+}
